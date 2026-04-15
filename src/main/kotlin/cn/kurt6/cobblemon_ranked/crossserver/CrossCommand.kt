@@ -2,16 +2,23 @@
 package cn.kurt6.cobblemon_ranked.crossserver
 
 import cn.kurt6.cobblemon_ranked.CobblemonRanked
+import cn.kurt6.cobblemon_ranked.battle.BattleHandler
+import cn.kurt6.cobblemon_ranked.battle.TeamSelectionManager
 import cn.kurt6.cobblemon_ranked.config.MessageConfig
 import cn.kurt6.cobblemon_ranked.crossserver.CrossServerSocket.webSocket
+import cn.kurt6.cobblemon_ranked.matchmaking.DuoMatchmakingQueue
 import cn.kurt6.cobblemon_ranked.util.RankUtils
+import com.cobblemon.mod.common.Cobblemon
+import com.cobblemon.mod.common.battles.BattleFormat
+import com.google.gson.JsonObject
 import com.mojang.brigadier.Command
 import com.mojang.brigadier.arguments.StringArgumentType
 import com.mojang.brigadier.builder.LiteralArgumentBuilder
+import com.mojang.brigadier.arguments.IntegerArgumentType
 import net.minecraft.server.command.CommandManager
 import net.minecraft.server.command.ServerCommandSource
+import net.minecraft.server.network.ServerPlayerEntity
 import net.minecraft.text.Text
-import com.mojang.brigadier.arguments.IntegerArgumentType
 
 object CrossCommand {
     fun register(): LiteralArgumentBuilder<ServerCommandSource> {
@@ -54,33 +61,23 @@ object CrossCommand {
 //                                }
 
                                 val mode = StringArgumentType.getString(context, "mode")
+                                if (!canJoinCrossQueue(player)) {
+                                    RankUtils.sendMessage(player, MessageConfig.get("queue.cannot_join", CobblemonRanked.config.defaultLang))
+                                    return@executes Command.SINGLE_SUCCESS
+                                }
+
+                                val teamUuids = Cobblemon.storage.getParty(player)
+                                    .filterNotNull()
+                                    .map { it.uuid }
+                                if (!BattleHandler.validateTeam(player, teamUuids, BattleFormat.GEN_9_SINGLES)) {
+                                    return@executes Command.SINGLE_SUCCESS
+                                }
+
                                 val team = Utils.getPokemonTeam(player)
 
                                 if (team.isEmpty()) {
                                     source.sendError(MessageConfig.get("command.join.empty_team",
                                         CobblemonRanked.config.defaultLang))
-                                    return@executes Command.SINGLE_SUCCESS
-                                }
-
-                                // +++ 检查是否有重复宝可梦 +++
-                                val speciesSet = mutableSetOf<String>()
-                                val duplicateSpecies = mutableListOf<String>()
-
-                                for (pokemon in team) {
-                                    val species = pokemon["species"]?.asString ?: pokemon["name"]?.asString ?: continue
-                                    if (species in speciesSet) {
-                                        duplicateSpecies.add(species)
-                                    } else {
-                                        speciesSet.add(species)
-                                    }
-                                }
-
-                                if (duplicateSpecies.isNotEmpty()) {
-                                    // 有重复宝可梦，阻止加入队列
-                                    source.sendError(MessageConfig.get("command.join.duplicate_pokemon",
-                                        CobblemonRanked.config.defaultLang,
-                                        "species" to duplicateSpecies.joinToString(", ")
-                                    ))
                                     return@executes Command.SINGLE_SUCCESS
                                 }
 
@@ -140,25 +137,15 @@ object CrossCommand {
                     CommandManager.literal("battle").apply {
                         requires { source ->
                         val player = source.player
-                        player != null && player.commandTags.contains("ranked_cross_in_battle1")
+                        player != null && getBattleSession(player) != null
                         }
                         .apply {
                             then(CommandManager.literal("move")
                                 .then(CommandManager.argument("slot", IntegerArgumentType.integer(1, 4))
                                     .suggests { context, builder ->
                                         val player = context.source.player ?: return@suggests builder.buildFuture()
-                                        val team = Utils.getPokemonTeam(player)
-                                        if (team.isEmpty()) return@suggests builder.buildFuture()
-
-                                        val activePokemon = team[0]
-                                        val moves = activePokemon.getAsJsonArray("moves")
-                                        moves.forEachIndexed { index, moveElement ->
-                                            val moveName = try {
-                                                moveElement.asJsonObject["name"]?.asString ?: "???"
-                                            } catch (e: Exception) {
-                                                "???"
-                                            }
-                                            builder.suggest("${index + 1}", Text.literal(moveName))
+                                        getAvailableMoveOptions(player).forEach { (slot, moveName) ->
+                                            builder.suggest(slot.toString(), Text.literal(moveName))
                                         }
                                         builder.buildFuture()
                                     }
@@ -189,13 +176,8 @@ object CrossCommand {
                                     .then(CommandManager.argument("slot", IntegerArgumentType.integer(1, 6))
                                         .suggests { context, builder ->
                                             val player = context.source.player ?: return@suggests builder.buildFuture()
-                                            val team = Utils.getPokemonTeam(player)
-                                            if (team.isEmpty()) return@suggests builder.buildFuture()
-
-                                            // 每个槽位的宝可梦名称
-                                            team.forEachIndexed { index, pokemon ->
-                                                val name = pokemon.get("name").asString
-                                                builder.suggest("${index + 1}", Text.literal(name))
+                                            getAvailableSwitchOptions(player).forEach { (slot, name) ->
+                                                builder.suggest(slot.toString(), Text.literal(name))
                                             }
                                             builder.buildFuture()
                                         }
@@ -271,5 +253,59 @@ object CrossCommand {
         val lang = CobblemonRanked.config.defaultLang
         sendMessage(Text.literal(MessageConfig.get(key, lang, *params))
             .styled { style -> style.withColor(0xFF5555) })
+    }
+
+    private fun canJoinCrossQueue(player: ServerPlayerEntity): Boolean {
+        if (Cobblemon.battleRegistry.getBattleByParticipatingPlayer(player) != null) return false
+        if (TeamSelectionManager.isPlayerInSelection(player.uuid)) return false
+        if (BattleHandler.isPlayerWaitingForArena(player.uuid)) return false
+        if (CobblemonRanked.matchmakingQueue.getPlayer(player.uuid) != null) return false
+        if (DuoMatchmakingQueue.isInQueue(player.uuid)) return false
+        return !player.isDisconnected
+    }
+
+    private fun getBattleSession(player: ServerPlayerEntity): CrossServerSocket.BattleSession? {
+        return CrossServerSocket.battleSessions[player.uuidAsString]
+    }
+
+    private fun getAvailableMoveOptions(player: ServerPlayerEntity): List<Pair<Int, String>> {
+        val session = getBattleSession(player) ?: return emptyList()
+        val activeIndex = session.selfActiveIndex
+        val initialPokemon = session.selfTeam.getOrNull(activeIndex) ?: return emptyList()
+        val currentPokemon = session.currentSelfTeam.getOrNull(activeIndex) ?: return emptyList()
+        val initialMoves = initialPokemon.getAsJsonArray("moves") ?: return emptyList()
+        val currentMoves = currentPokemon.getAsJsonArray("moves") ?: return emptyList()
+
+        return buildList {
+            for (i in 0 until minOf(4, initialMoves.size(), currentMoves.size())) {
+                val currentMove = currentMoves.get(i).asJsonObject
+                val currentPp = currentMove["current_pp"]?.asInt ?: 0
+                if (currentPp <= 0) continue
+
+                val initialMove = initialMoves.get(i).asJsonObject
+                add((i + 1) to (initialMove["name"]?.asString ?: "???"))
+            }
+        }
+    }
+
+    private fun getAvailableSwitchOptions(player: ServerPlayerEntity): List<Pair<Int, String>> {
+        val session = getBattleSession(player) ?: return emptyList()
+
+        return buildList {
+            session.currentSelfTeam.forEachIndexed { index, pokemon ->
+                if (index == session.selfActiveIndex) return@forEachIndexed
+
+                val hp = pokemon["hp"]?.asInt ?: 0
+                if (hp <= 0) return@forEachIndexed
+
+                add((index + 1) to getPokemonName(session, index, pokemon))
+            }
+        }
+    }
+
+    private fun getPokemonName(session: CrossServerSocket.BattleSession, index: Int, fallbackPokemon: JsonObject): String {
+        return session.selfTeam.getOrNull(index)?.get("name")?.asString
+            ?: fallbackPokemon.get("name")?.asString
+            ?: "???"
     }
 }

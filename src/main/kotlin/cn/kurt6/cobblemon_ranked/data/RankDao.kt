@@ -121,6 +121,10 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
         val z = double("z")
         val timestamp = long("timestamp").default(System.currentTimeMillis())
 
+        init {
+            index("idx_return_location_timestamp", false, timestamp)
+        }
+
         override val primaryKey = PrimaryKey(playerId)
     }
 
@@ -142,7 +146,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getReturnLocation(playerId: UUID): Pair<String, Triple<Double, Double, Double>>? =
         executeWithRetry("Get return location") {
             transaction(database) {
-                ReturnLocationTable.select { ReturnLocationTable.playerId eq playerId.toString() }
+                ReturnLocationTable.selectAll()
+                    .where { ReturnLocationTable.playerId eq playerId.toString() }
                     .firstOrNull()?.let {
                         val worldId = it[ReturnLocationTable.worldId]
                         val x = it[ReturnLocationTable.x]
@@ -168,11 +173,13 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
 
     fun savePlayerData(data: PlayerRankData) = executeWithRetry("Save player data") {
         transaction(database) {
-            val existing = PlayerRankTable.select {
-                (PlayerRankTable.playerId eq data.playerId.toString()) and
-                        (PlayerRankTable.seasonId eq data.seasonId) and
-                        (PlayerRankTable.format eq data.format)
-            }.firstOrNull()
+            val existing = PlayerRankTable.selectAll()
+                .where {
+                    (PlayerRankTable.playerId eq data.playerId.toString()) and
+                            (PlayerRankTable.seasonId eq data.seasonId) and
+                            (PlayerRankTable.format eq data.format)
+                }
+                .firstOrNull()
 
             val ranksStr = data.claimedRanks
                 .filter { it.split(":").getOrNull(1) == data.format }
@@ -215,13 +222,10 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getPlayerData(playerId: UUID, seasonId: Int, format: String? = null): PlayerRankData? =
         executeWithRetry("Get player data") {
             transaction(database) {
-                val query = PlayerRankTable.select {
+                val query = PlayerRankTable.selectAll().where {
                     (PlayerRankTable.playerId eq playerId.toString()) and
-                            (PlayerRankTable.seasonId eq seasonId)
-                }
-
-                if (format != null) {
-                    query.andWhere { PlayerRankTable.format eq format }
+                            (PlayerRankTable.seasonId eq seasonId) and
+                            (format?.let { PlayerRankTable.format eq it } ?: Op.TRUE)
                 }
 
                 query.firstOrNull()?.let {
@@ -249,10 +253,15 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getLeaderboard(seasonId: Int, format: String, offset: Long, limit: Int): List<PlayerRankData> =
         executeWithRetry("Get leaderboard") {
             transaction(database) {
-                PlayerRankTable.select {
-                    (PlayerRankTable.seasonId eq seasonId) and
-                            (PlayerRankTable.format eq format)
-                }.orderBy(PlayerRankTable.elo to SortOrder.DESC)
+                PlayerRankTable.selectAll()
+                    .where {
+                        (PlayerRankTable.seasonId eq seasonId) and
+                                (PlayerRankTable.format eq format)
+                    }
+                    .orderBy(
+                    PlayerRankTable.elo to SortOrder.DESC,
+                    PlayerRankTable.playerId to SortOrder.ASC
+                )
                     .limit(limit, offset)
                     .map(::rowToPlayerRankData)
             }
@@ -261,33 +270,47 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getPlayerCount(seasonId: Int, format: String): Int =
         executeWithRetry("Get player count") {
             transaction(database) {
-                PlayerRankTable.select {
-                    (PlayerRankTable.seasonId eq seasonId) and
-                            (PlayerRankTable.format eq format)
-                }.count().toInt()
+                PlayerRankTable.selectAll()
+                    .where {
+                        (PlayerRankTable.seasonId eq seasonId) and
+                                (PlayerRankTable.format eq format)
+                    }
+                    .count()
+                    .toInt()
             }
         }
 
     fun getPlayerRank(playerId: UUID, seasonId: Int, format: String): Int =
         executeWithRetry("Get player rank") {
             transaction(database) {
-                val playerElo = PlayerRankTable.select {
-                    (PlayerRankTable.playerId eq playerId.toString()) and
-                            (PlayerRankTable.seasonId eq seasonId) and
-                            (PlayerRankTable.format eq format)
-                }.firstOrNull()?.get(PlayerRankTable.elo) ?: return@transaction -1
+                val playerElo = PlayerRankTable.selectAll()
+                    .where {
+                        (PlayerRankTable.playerId eq playerId.toString()) and
+                                (PlayerRankTable.seasonId eq seasonId) and
+                                (PlayerRankTable.format eq format)
+                    }
+                    .firstOrNull()
+                    ?.get(PlayerRankTable.elo)
+                    ?: return@transaction -1
 
-                PlayerRankTable.select {
-                    (PlayerRankTable.seasonId eq seasonId) and
-                            (PlayerRankTable.format eq format) and
-                            (PlayerRankTable.elo greaterEq playerElo)
-                }.count().toInt()
+                val higherRatedPlayers = PlayerRankTable.selectAll()
+                    .where {
+                        (PlayerRankTable.seasonId eq seasonId) and
+                                (PlayerRankTable.format eq format) and
+                                (PlayerRankTable.elo greater playerElo)
+                    }
+                    .count()
+                    .toInt()
+
+                higherRatedPlayers + 1
             }
         }
 
     fun saveSeasonInfo(seasonId: Int, startDate: String, endDate: String, ended: Boolean = false, name: String = "") = executeWithRetry("Save season info") {
         transaction(database) {
-            val existing = SeasonInfoTable.select { SeasonInfoTable.seasonId eq seasonId }.firstOrNull()
+            val existing = SeasonInfoTable.selectAll()
+                .where { SeasonInfoTable.seasonId eq seasonId }
+                .firstOrNull()
 
             if (existing != null) {
                 SeasonInfoTable.update({ SeasonInfoTable.seasonId eq seasonId }) {
@@ -345,7 +368,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getSeasonInfo(seasonId: Int): SeasonInfo? = executeWithRetry("Get season info") {
         transaction(database) {
             SeasonInfoTable
-                .select { SeasonInfoTable.seasonId eq seasonId }
+                .selectAll()
+                .where { SeasonInfoTable.seasonId eq seasonId }
                 .firstOrNull()
                 ?.let {
                     SeasonInfo(
@@ -377,6 +401,11 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
         val claimedRanks = text("claimed_ranks")
         val fleeCount = integer("flee_count").default(0)
 
+        init {
+            index("idx_player_rank_player_season_format", false, playerId, seasonId, format)
+            index("idx_player_rank_season_format_elo", false, seasonId, format, elo)
+        }
+
         override val primaryKey = PrimaryKey(id)
     }
 
@@ -394,12 +423,18 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
         val pokemonSpecies = varchar("pokemon_species", 50)
         val count = integer("count")
 
+        init {
+            index("idx_pokemon_usage_season_species", false, seasonId, pokemonSpecies)
+            index("idx_pokemon_usage_season_count", false, seasonId, count)
+        }
+
         override val primaryKey = PrimaryKey(id)
     }
 
     fun getAllPlayerData(seasonId: Int): List<PlayerRankData> = executeWithRetry("Get all player data") {
         transaction(database) {
-            PlayerRankTable.select { PlayerRankTable.seasonId eq seasonId }
+            PlayerRankTable.selectAll()
+                .where { PlayerRankTable.seasonId eq seasonId }
                 .map(::rowToPlayerRankData)
         }
     }
@@ -407,8 +442,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getParticipationCount(seasonId: Int, format: String): Long = executeWithRetry("Get participation count by format") {
         transaction(database) {
             PlayerRankTable
-                .slice(PlayerRankTable.playerId)
-                .select {
+                .select(PlayerRankTable.playerId)
+                .where {
                     (PlayerRankTable.seasonId eq seasonId) and
                             (PlayerRankTable.format eq format)
                 }
@@ -450,10 +485,12 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
 
     fun incrementPokemonUsage(seasonId: Int, pokemonSpecies: String) = executeWithRetry("Increment pokemon usage") {
         transaction(database) {
-            val existing = PokemonUsageTable.select {
-                (PokemonUsageTable.seasonId eq seasonId) and
-                        (PokemonUsageTable.pokemonSpecies eq pokemonSpecies.lowercase())
-            }.firstOrNull()
+            val existing = PokemonUsageTable.selectAll()
+                .where {
+                    (PokemonUsageTable.seasonId eq seasonId) and
+                            (PokemonUsageTable.pokemonSpecies eq pokemonSpecies.lowercase())
+                }
+                .firstOrNull()
 
             if (existing != null) {
                 PokemonUsageTable.update({
@@ -475,7 +512,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getPokemonUsage(seasonId: Int, limit: Int, offset: Int): List<Pair<String, Int>> = executeWithRetry("Get pokemon usage") {
         transaction(database) {
             PokemonUsageTable
-                .select { PokemonUsageTable.seasonId eq seasonId }
+                .selectAll()
+                .where { PokemonUsageTable.seasonId eq seasonId }
                 .orderBy(PokemonUsageTable.count to SortOrder.DESC)
                 .limit(limit, offset.toLong())
                 .map {
@@ -487,7 +525,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getTotalPokemonUsage(seasonId: Int): Int = executeWithRetry("Get total pokemon usage") {
         transaction(database) {
             PokemonUsageTable
-                .select { PokemonUsageTable.seasonId eq seasonId }
+                .selectAll()
+                .where { PokemonUsageTable.seasonId eq seasonId }
                 .count().toInt()
         }
     }
@@ -495,7 +534,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getTotalPokemonUsageCount(seasonId: Int): Int = executeWithRetry("Get total pokemon usage count") {
         transaction(database) {
             PokemonUsageTable
-                .select { PokemonUsageTable.seasonId eq seasonId }
+                .selectAll()
+                .where { PokemonUsageTable.seasonId eq seasonId }
                 .sumOf { it[PokemonUsageTable.count] }
         }
     }
@@ -503,7 +543,8 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
     fun getUsageStatistics(seasonId: Int): Map<String, Int> = executeWithRetry("Get usage statistics") {
         transaction(database) {
             PokemonUsageTable
-                .select { PokemonUsageTable.seasonId eq seasonId }
+                .selectAll()
+                .where { PokemonUsageTable.seasonId eq seasonId }
                 .associate {
                     it[PokemonUsageTable.pokemonSpecies].lowercase() to it[PokemonUsageTable.count]
                 }

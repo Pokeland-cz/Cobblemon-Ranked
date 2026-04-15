@@ -28,25 +28,22 @@ class RewardManager(private val rankDao: RankDao) {
                 player.sendMessage(Text.literal(denyMsg))
                 return
             }
-            BattleHandler.grantRankReward(player, rank, format, server)
-
-            playerData.markRewardClaimed(rank, format)
-            rankDao.savePlayerData(playerData)
-
-            val name = player.name.string
-            val message = Text.literal(MessageConfig.get("reward.broadcast", lang, "player" to name, "rank" to rank))
-            server.playerManager.broadcast(message, false)
+            if (BattleHandler.grantRankReward(player, rank, format, server)) {
+                val name = player.name.string
+                val message = Text.literal(MessageConfig.get("reward.broadcast", lang, "player" to name, "rank" to rank))
+                server.playerManager.broadcast(message, false)
+            }
         }
     }
 
-    fun grantRankReward(player: PlayerEntity, rank: String, format: String, server: MinecraftServer) {
+    fun grantRankReward(player: PlayerEntity, rank: String, format: String, server: MinecraftServer): Boolean {
         val config = CobblemonRanked.config
         val lang = CobblemonRanked.config.defaultLang
         val rewards = config.rankRewards[format]?.get(rank)
 
         if (rewards.isNullOrEmpty()) {
             player.sendMessage(Text.literal(MessageConfig.get("reward.not_configured", lang)).formatted(Formatting.RED))
-            return
+            return false
         }
 
         rewards.forEach { command ->
@@ -54,6 +51,7 @@ class RewardManager(private val rankDao: RankDao) {
         }
 
         player.sendMessage(Text.literal(MessageConfig.get("reward.granted", lang, "rank" to rank)).formatted(Formatting.GREEN))
+        return true
     }
 
     private fun executeRewardCommand(command: String, player: PlayerEntity, server: MinecraftServer) {

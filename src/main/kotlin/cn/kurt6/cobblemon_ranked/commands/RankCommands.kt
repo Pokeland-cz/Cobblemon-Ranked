@@ -355,9 +355,13 @@ object RankCommands {
             return 0
         }
 
-        CobblemonRanked.rewardManager.grantRankReward(player, matchedRank, format, source.server)
-        source.sendMessage(Text.literal(MessageConfig.get("reward.granted_to", lang, "player" to player.name.string, "format" to format, "rank" to matchedRank)))
-        return 1
+        return if (CobblemonRanked.rewardManager.grantRankReward(player, matchedRank, format, source.server)) {
+            source.sendMessage(Text.literal(MessageConfig.get("reward.granted_to", lang, "player" to player.name.string, "format" to format, "rank" to matchedRank)))
+            1
+        } else {
+            source.sendMessage(Text.literal(MessageConfig.get("reward.not_configured", lang)))
+            0
+        }
     }
 
     private fun endSeason(ctx: CommandContext<ServerCommandSource>): Int {
@@ -401,12 +405,13 @@ object RankCommands {
 
         val rank = dao.getPlayerRank(player.uuid, seasonId, format)
         val rankString = if (rank != -1) "#$rank" else MessageConfig.get("rank.unranked", lang)
+        val seasonName = CobblemonRanked.seasonManager.getSeasonName(seasonId)
 
         val msg = MessageConfig.get("rank.summary", lang,
             "player" to player.name.string,
             "format" to format,
             "season" to seasonId.toString(),
-            "name" to CobblemonRanked.seasonManager.currentSeasonName,
+            "name" to seasonName,
             "title" to data.getRankTitle(),
             "elo" to data.elo.toString(),
             "rank" to rankString,
@@ -426,12 +431,13 @@ object RankCommands {
         val lang = CobblemonRanked.config.defaultLang
         val source = ctx.source
         val dao = CobblemonRanked.rankDao
+        val seasonName = CobblemonRanked.seasonManager.getSeasonName(seasonId)
         val totalPlayers = dao.getPlayerCount(seasonId, format)
 
         if (totalPlayers == 0) {
             source.sendMessage(Text.literal(MessageConfig.get("leaderboard.empty", lang,
                 "season" to seasonId.toString(),
-                "name" to CobblemonRanked.seasonManager.currentSeasonName,
+                "name" to seasonName,
                 "format" to format)))
             return 1
         }
@@ -445,7 +451,7 @@ object RankCommands {
         val header = MessageConfig.get("leaderboard.header", lang,
             "format" to format,
             "season" to seasonId.toString(),
-            "name" to CobblemonRanked.seasonManager.currentSeasonName,
+            "name" to seasonName,
             "page" to currentPage.toString(),
             "total" to totalPages.toString()
         )
@@ -742,8 +748,9 @@ object RankCommands {
     private fun showMyInfoMenu(player: ServerPlayerEntity, season: Int) {
         val lang = CobblemonRanked.config.defaultLang
         for (s in season downTo maxOf(1, season - 4)) {
+            val seasonName = CobblemonRanked.seasonManager.getSeasonName(s)
             val row1 = Text.empty()
-                .append(MessageConfig.get("gui.info_target.season", lang, "season" to s.toString(), "name" to CobblemonRanked.seasonManager.currentSeasonName))
+                .append(MessageConfig.get("gui.info_target.season", lang, "season" to s.toString(), "name" to seasonName))
                 .append(space())
                 .append(link(MessageConfig.get("gui.myinfo.1v1", lang), "/rank info ${player.name.string} singles $s"))
                 .append(space())
@@ -775,6 +782,7 @@ object RankCommands {
         val source = ctx.source
         val lang = CobblemonRanked.config.defaultLang
         val dao = CobblemonRanked.rankDao
+        val seasonName = CobblemonRanked.seasonManager.getSeasonName(seasonId)
 
         val pageSize = 10
         val offset = (page - 1) * pageSize
@@ -783,7 +791,7 @@ object RankCommands {
         val totalPages = (total + pageSize - 1) / pageSize
 
         if (usageList.isEmpty()) {
-            source.sendMessage(Text.literal(MessageConfig.get("pokemon_usage.empty", lang, "season" to seasonId.toString(), "name" to CobblemonRanked.seasonManager.currentSeasonName)))
+            source.sendMessage(Text.literal(MessageConfig.get("pokemon_usage.empty", lang, "season" to seasonId.toString(), "name" to seasonName)))
             return 1
         }
 
@@ -793,7 +801,7 @@ object RankCommands {
             "season" to seasonId.toString(),
             "page" to page.toString(),
             "total" to totalPages.toString(),
-            "name" to CobblemonRanked.seasonManager.currentSeasonName
+            "name" to seasonName
         )
         source.sendMessage(Text.literal(header))
 

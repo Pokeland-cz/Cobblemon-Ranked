@@ -136,6 +136,7 @@ class CobblemonRanked : ModInitializer {
 
                 matchmakingQueue.shutdown()
                 DuoMatchmakingQueue.shutdown()
+                DuoBattleManager.shutdown()
                 matchmakingQueue.clear()
                 CrossServerSocket.disconnect()
                 cn.kurt6.cobblemon_ranked.battle.TeamSelectionManager.shutdown()
@@ -160,6 +161,8 @@ class CobblemonRanked : ModInitializer {
             val cleanupInterval = 20 * 60 * 60 * 24
 
             ServerTickEvents.START_SERVER_TICK.register {
+                BattleHandler.tick(server)
+
                 if (++tickCounter >= interval) {
                     tickCounter = 0
                     seasonManager.checkSeasonEnd(server)

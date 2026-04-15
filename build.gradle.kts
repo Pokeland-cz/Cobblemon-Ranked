@@ -40,17 +40,60 @@ repositories {
     // Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
     // See https://docs.gradle.org/current/userguide/declaring_repositories.html
     // for more information about repositories.
-    mavenCentral()
-    maven { url = uri("https://repo.cable-mc.net/releases") }
-    maven { url = uri("https://maven.impactdev.net/repository/development/") }
-    maven { url = uri("https://maven.fabricmc.net/") }
-    maven { url = uri("https://maven.quiltmc.org/repository/release") }
-    maven { url = uri("https://maven.nucleoid.xyz/") }
+    // China-friendly mirror for Maven Central and common public artifacts.
     maven {
-        name = ("Modrinth")
+        name = "Aliyun Public"
+        url = uri("https://maven.aliyun.com/repository/public")
+    }
+    mavenCentral()
+
+    // China-friendly Fabric mirror.
+    maven {
+        name = "FastMC Fabric Mirror"
+        url = uri("https://fabric.fastmcmirror.org")
+        content {
+            includeGroup("net.fabricmc")
+            includeGroup("net.fabricmc.fabric-api")
+        }
+    }
+
+    // Official fallbacks.
+    maven {
+        name = "Fabric Official"
+        url = uri("https://maven.fabricmc.net/")
+        content {
+            includeGroup("net.fabricmc")
+            includeGroup("net.fabricmc.fabric-api")
+        }
+    }
+    maven {
+        name = "Quilt Release"
+        url = uri("https://maven.quiltmc.org/repository/release")
+    }
+    maven {
+        name = "Impact Development"
+        url = uri("https://maven.impactdev.net/repository/development/")
+    }
+    maven {
+        name = "Nucleoid"
+        url = uri("https://maven.nucleoid.xyz/")
+        content {
+            includeGroup("eu.pb4")
+        }
+    }
+    // Cobblemon currently keeps the official repository as a fallback.
+    maven {
+        name = "Cable MC Releases"
+        url = uri("https://repo.cable-mc.net/releases")
+        content {
+            includeGroup("com.cobblemon")
+        }
+    }
+    maven {
+        name = "Modrinth"
         url = uri("https://api.modrinth.com/maven")
         content {
-            includeGroup ("maven.modrinth")
+            includeGroup("maven.modrinth")
         }
     }
 }
@@ -103,9 +146,9 @@ tasks.processResources {
     filesMatching("fabric.mod.json") {
         expand(
             "version" to project.version,
-            "minecraft_version" to project.property("minecraft_version"),
-            "loader_version" to project.property("loader_version"),
-            "kotlin_loader_version" to project.property("kotlin_loader_version")
+            "minecraft_version" to (project.property("minecraft_version") as String),
+            "loader_version" to (project.property("loader_version") as String),
+            "kotlin_loader_version" to (project.property("kotlin_loader_version") as String)
         )
     }
 }

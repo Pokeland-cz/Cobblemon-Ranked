@@ -14,9 +14,30 @@ object MessageConfig {
     private val messages: Map<String, Map<String, String>> = loadOrCreate()
 
     private fun loadOrCreate(): Map<String, Map<String, String>> {
+        val defaultMessages = defaultMessages()
         if (!Files.exists(path)) {
             Files.createDirectories(path.parent)
-            val defaultMessages = mapOf(
+            val json = gson.toJson(defaultMessages)
+            Files.writeString(path, json)
+            return defaultMessages
+        }
+
+        val json = Files.readString(path)
+        val type = object : TypeToken<Map<String, Map<String, String>>>() {}.type
+        val existing: Map<String, Map<String, String>> = gson.fromJson(json, type) ?: emptyMap()
+        val merged = defaultMessages.mapValues { (key, defaults) ->
+            defaults + (existing[key] ?: emptyMap())
+        } + existing.filterKeys { it !in defaultMessages }
+
+        if (merged != existing) {
+            Files.writeString(path, gson.toJson(merged))
+        }
+
+        return merged
+    }
+
+    private fun defaultMessages(): Map<String, Map<String, String>> {
+        return mapOf(
                 "queue.version_outdated" to mapOf(
                     "zh" to "§c您的Cobblemon Ranked客户端版本过低！请升级版本后参与排位。",
                     "en" to "§cYour version of the Cobblemon Ranked client is outdated! Please upgrade to the latest version to participate in ranked matches."
@@ -44,6 +65,18 @@ object MessageConfig {
                 "queue.selection_timeout" to mapOf(
                     "zh" to "§c选人超时，系统已自动为您选择默认首发。",
                     "en" to "§cSelection timed out. Default team selected automatically."
+                ),
+                "battle.turn.start" to mapOf(
+                    "zh" to "§e[Ranked] 请在 {seconds} 秒内完成本回合操作。",
+                    "en" to "§e[Ranked] Please choose your action within {seconds} seconds."
+                ),
+                "battle.turn.remaining_actionbar" to mapOf(
+                    "zh" to "§e本回合剩余时间: §6{seconds}§es",
+                    "en" to "§eTurn time remaining: §6{seconds}§es"
+                ),
+                "battle.turn.timeout_auto_action" to mapOf(
+                    "zh" to "§e[Ranked] 回合超时，系统已自动为你选择行动。",
+                    "en" to "§e[Ranked] Turn timed out. An action was chosen automatically."
                 ),
                 "queue.selection_invalid" to mapOf(
                     "zh" to "§c[Ranked] 队伍选择无效：包含了已无法战斗的宝可梦或数量不符！",
@@ -1149,14 +1182,6 @@ object MessageConfig {
                     "en" to "§cAlready in cross server queue or battle"
                 )
             )
-            val json = gson.toJson(defaultMessages)
-            Files.writeString(path, json)
-            return defaultMessages
-        }
-
-        val json = Files.readString(path)
-        val type = object : TypeToken<Map<String, Map<String, String>>>() {}.type
-        return gson.fromJson(json, type)
     }
 
     fun get(key: String, lang: String = CobblemonRanked.config.defaultLang, vararg args: Pair<String, Any>): String {

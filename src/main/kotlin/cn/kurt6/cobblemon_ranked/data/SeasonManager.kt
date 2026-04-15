@@ -15,7 +15,7 @@ class SeasonManager(
     private val logger = LoggerFactory.getLogger(SeasonManager::class.java)
     var currentSeasonName: String = ""
 
-    private val config = CobblemonRanked.config
+    private val config get() = CobblemonRanked.config
 
     var currentSeasonId: Int = 1
         private set
@@ -114,6 +114,13 @@ class SeasonManager(
             hours = duration.toHours() % 24,
             minutes = duration.toMinutes() % 60
         )
+    }
+
+    fun getSeasonName(seasonId: Int): String {
+        if (seasonId == currentSeasonId) {
+            return currentSeasonName
+        }
+        return rankDao.getSeasonInfo(seasonId)?.seasonName ?: ""
     }
 
     fun formatDate(date: LocalDateTime): String = dateFormatter.format(date)

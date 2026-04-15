@@ -147,6 +147,7 @@
   "allowDuplicateItems": false, // 是否允许队伍中携带重复道具 (道具条款)
   "enableTeamPreview": true, // 是否启用队伍预览和选出阶段 (6选3/4)
   "teamSelectionTime": 90, // 队伍选择阶段的时间限制(秒)
+  "turnActionTimeoutSeconds": 90, // 每回合选择行动的时间限制（秒，0为关闭）
   "singlesPickCount": 3, // 单打模式选出的宝可梦数量 (通常为3)
   "doublesPickCount": 4, // 双打模式选出的宝可梦数量 (通常为4)
   "maxEloDiff": 200, // 最大 Elo 匹配差值

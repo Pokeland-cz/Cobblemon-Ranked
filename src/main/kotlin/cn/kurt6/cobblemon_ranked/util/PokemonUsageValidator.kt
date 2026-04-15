@@ -4,15 +4,15 @@ import cn.kurt6.cobblemon_ranked.CobblemonRanked
 import cn.kurt6.cobblemon_ranked.config.MessageConfig
 import com.cobblemon.mod.common.pokemon.Pokemon
 import com.cobblemon.mod.common.pokemon.Species
-import net.minecraft.server.network.ServerPlayerEntity
 
 object PokemonUsageValidator {
 
     fun validateUsageRestrictions(
-        player: ServerPlayerEntity,
         pokemon: Pokemon,
         seasonId: Int,
-        lang: String
+        lang: String,
+        usageStats: Map<String, Int> = emptyMap(),
+        totalUsage: Int = usageStats.values.sum()
     ): ValidationResult {
         val config = CobblemonRanked.config
 
@@ -22,7 +22,7 @@ object PokemonUsageValidator {
         }
 
         if (config.banUsageBelow > 0.0 || config.banUsageAbove > 0.0 || config.banTopUsed > 0) {
-            val result = validateUsageRate(pokemon, seasonId, lang)
+            val result = validateUsageRate(pokemon, seasonId, lang, usageStats, totalUsage)
             if (!result.isValid) return result
         }
 
@@ -49,13 +49,19 @@ object PokemonUsageValidator {
         return ValidationResult(true)
     }
 
-    private fun validateUsageRate(pokemon: Pokemon, seasonId: Int, lang: String): ValidationResult {
+    private fun validateUsageRate(
+        pokemon: Pokemon,
+        seasonId: Int,
+        lang: String,
+        cachedUsageStats: Map<String, Int>,
+        cachedTotalUsage: Int
+    ): ValidationResult {
         val config = CobblemonRanked.config
         val dao = CobblemonRanked.rankDao
         val speciesName = pokemon.species.name.lowercase()
 
-        val usageStats = dao.getUsageStatistics(seasonId)
-        val totalUsage = usageStats.values.sum()
+        val usageStats = if (cachedUsageStats.isNotEmpty()) cachedUsageStats else dao.getUsageStatistics(seasonId)
+        val totalUsage = if (cachedUsageStats.isNotEmpty()) cachedTotalUsage else usageStats.values.sum()
 
         if (totalUsage == 0) {
             return ValidationResult(true)

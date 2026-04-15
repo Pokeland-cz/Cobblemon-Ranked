@@ -27,8 +27,7 @@ class ServerNetworking {
             val lang = config.defaultLang
 
             if (data != null) {
-                val fullList = dao.getLeaderboard(seasonId, format, offset = 0, limit = Int.MAX_VALUE)
-                val rankIndex = fullList.indexOfFirst { it.playerId == player.uuid }
+                val rank = dao.getPlayerRank(player.uuid, seasonId, format)
 
                 val response = PlayerRankDataPayload(
                     playerName = data.playerName,
@@ -41,7 +40,7 @@ class ServerNetworking {
                     bestWinStreak = data.bestWinStreak,
                     fleeCount = data.fleeCount,
                     rankTitle = data.getRankTitle(),
-                    globalRank = if (rankIndex != -1) rankIndex + 1 else null
+                    globalRank = rank.takeIf { it > 0 }
                 )
 
                 ServerPlayNetworking.send(player, response)

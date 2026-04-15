@@ -24,7 +24,7 @@ object CrossServerSocket {
     val modVersion = "1.2.0"
 
     var webSocket: WebSocket? = null
-    private val config = CobblemonRanked.config
+    private val config get() = CobblemonRanked.config
     private var manualDisconnect = false
 
     private fun JsonObject.deepCopy(): JsonObject {
@@ -33,6 +33,7 @@ object CrossServerSocket {
 
     private val playerMap = ConcurrentHashMap<String, ServerPlayerEntity>()
     val battleSessions = ConcurrentHashMap<String, BattleSession>()
+    private val battleSessionsByBattleId = ConcurrentHashMap<String, BattleSession>()
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
@@ -44,6 +45,44 @@ object CrossServerSocket {
 
     private var heartbeatJob: Job? = null
     private var connectionInitiator: ServerCommandSource? = null
+
+    private fun executeOnPlayerServer(player: ServerPlayerEntity, action: () -> Unit) {
+        player.server.execute(action)
+    }
+
+    private fun executeOnSourceServer(source: ServerCommandSource, action: () -> Unit) {
+        source.server.execute(action)
+    }
+
+    private fun notifyTrackedPlayers(messageKey: String) {
+        val lang = config.defaultLang
+        playerMap.values.toList().forEach { player ->
+            executeOnPlayerServer(player) {
+                if (!player.isDisconnected) {
+                    RankUtils.sendMessage(player, MessageConfig.get(messageKey, lang))
+                }
+            }
+        }
+    }
+
+    private fun putBattleSession(playerId: String, session: BattleSession) {
+        removeBattleSession(playerId)
+        battleSessions[playerId] = session
+        battleSessionsByBattleId[session.battleId] = session
+    }
+
+    private fun removeBattleSession(playerId: String): BattleSession? {
+        val removed = battleSessions.remove(playerId)
+        if (removed != null) {
+            battleSessionsByBattleId.remove(removed.battleId, removed)
+        }
+        return removed
+    }
+
+    private fun clearBattleSessions() {
+        battleSessions.clear()
+        battleSessionsByBattleId.clear()
+    }
 
     private fun cleanupConnection() {
         webSocket = null
@@ -84,7 +123,9 @@ object CrossServerSocket {
             connectionInitiator?.let { source ->
                 val lang = config.defaultLang
                 val successMessage = MessageConfig.get("cross.log.heartbeat_start", lang)
-                source.sendMessage(Text.literal(successMessage))
+                executeOnSourceServer(source) {
+                    source.sendMessage(Text.literal(successMessage))
+                }
             }
             while (isActive) {
                 delay(20_000)
@@ -97,9 +138,9 @@ object CrossServerSocket {
                     webSocket?.send(message)
                 } catch (e: Exception) {
                     logError("cross.log.heartbeat_failed", e, "error" to (e.message ?: "null"))
-                    disconnect()
-                    delay(5_000)
-                    connect()
+                    cleanupConnection()
+                    scheduleReconnect()
+                    return@launch
                 }
             }
         }
@@ -108,139 +149,141 @@ object CrossServerSocket {
     private fun handleBattleEvent(json: JsonObject) {
         val eventType = json["event_type"].asString
         val battleId = json["battle_id"].asString
-        val session = battleSessions.values.find { it.battleId == battleId } ?: return
+        val session = battleSessionsByBattleId[battleId] ?: return
         val player = session.player
-        val lang = config.defaultLang
+        executeOnPlayerServer(player) {
+            val lang = config.defaultLang
 
-        when (eventType) {
-            "turn_start" -> {
-                requestBattleState(battleId)
-            }
-            "battle_start" -> {
-                val player1 = json["player1"].asString
-                val player2 = json["player2"].asString
-                val pokemon1 = json["pokemon1"].asString
-                val pokemon2 = json["pokemon2"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.start", lang))
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.players", lang,
-                    "player1" to player1, "player2" to player2))
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lead", lang,
-                    "player" to player1, "pokemon" to pokemon1))
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lead", lang,
-                    "player" to player2, "pokemon" to pokemon2))
-            }
-            "move_used" -> {
-                val playerName = json["player"].asString
-                val pokemon = json["pokemon"].asString
-                val move = json["move"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_used", lang,
-                    "playerName" to playerName, "pokemon" to pokemon, "move" to move))
-            }
-            "move_missed" -> {
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_missed", lang))
-            }
-            "damage_dealt" -> {
-                val targetPlayer = json["target_player"].asString
-                val targetPokemon = json["target_pokemon"].asString
-                val damage = json["damage"].asInt
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.damage_dealt", lang,
-                    "targetPlayer" to targetPlayer, "targetPokemon" to targetPokemon, "damage" to damage))
-            }
-            "critical_hit" -> {
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.critical_hit", lang))
-            }
-            "effectiveness" -> {
-                val effectiveness = json["effectiveness"].asFloat
-                val messageKey = when {
-                    effectiveness == 0f -> "cross.battle.effectiveness.none"
-                    effectiveness <= 0.5f -> "cross.battle.effectiveness.very_bad"
-                    effectiveness < 1f -> "cross.battle.effectiveness.bad"
-                    effectiveness == 2f -> "cross.battle.effectiveness.super"
-                    effectiveness > 2f -> "cross.battle.effectiveness.very_super"
-                    effectiveness > 1f -> "cross.battle.effectiveness.good"
-                    else -> ""
+            when (eventType) {
+                "turn_start" -> {
+                    requestBattleState(battleId)
                 }
-                if (messageKey.isNotEmpty()) {
-                    RankUtils.sendMessage(player, MessageConfig.get(messageKey, lang))
+                "battle_start" -> {
+                    val player1 = json["player1"].asString
+                    val player2 = json["player2"].asString
+                    val pokemon1 = json["pokemon1"].asString
+                    val pokemon2 = json["pokemon2"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.start", lang))
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.players", lang,
+                        "player1" to player1, "player2" to player2))
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lead", lang,
+                        "player" to player1, "pokemon" to pokemon1))
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lead", lang,
+                        "player" to player2, "pokemon" to pokemon2))
                 }
-            }
-            "status_applied" -> {
-                val pokemon = json["pokemon"].asString
-                val status = json["status"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.status_applied", lang,
-                    "pokemon" to pokemon, "status" to MessageConfig.get("cross.status.$status", lang)))
-            }
-            "status_damage" -> {
-                val pokemon = json["pokemon"].asString
-                val status = json["status"].asString
-                val damage = json["damage"].asInt
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.status_damage", lang,
-                    "pokemon" to pokemon, "status" to MessageConfig.get("cross.status.$status", lang), "damage" to damage))
-            }
-            "pokemon_fainted" -> {
-                val playerName = json["player"].asString
-                val pokemon = json["pokemon"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.pokemon_fainted", lang,
-                    "playerName" to playerName, "pokemon" to pokemon))
-            }
-            "switch_out" -> {
-                val playerName = json["player"].asString
-                val pokemon = json["pokemon"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.switch_out", lang,
-                    "playerName" to playerName, "pokemon" to pokemon))
-            }
-            "switch_in" -> {
-                val playerName = json["player"].asString
-                val pokemon = json["pokemon"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.switch_in", lang,
-                    "playerName" to playerName, "pokemon" to pokemon))
-            }
-            "stat_change" -> {
-                val pokemon = json["pokemon"].asString
-                val stat = json["stat"].asString
-                val direction = json["direction"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.stat_change", lang,
-                    "pokemon" to pokemon,
-                    "stat" to MessageConfig.get("cross.stat.$stat", lang),
-                    "direction" to MessageConfig.get("cross.direction.$direction", lang)))
-            }
-            "ability_triggered" -> {
-                val pokemon = json["pokemon"].asString
-                val ability = json["ability"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ability_triggered", lang,
-                    "pokemon" to pokemon, "ability" to ability))
-            }
-            "move_unusable" -> {
-                val pokemon = json["pokemon"].asString
-                val move = json["move"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_unusable", lang,
-                    "pokemon" to pokemon, "move" to move))
-            }
-            "battle_ended" -> {
-                val winner = json["winner"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ended", lang))
-                if (winner == "forfeit") {
-                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_self", lang))
-                } else if (player.uuidAsString == winner) {
-                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.win", lang))
-                } else {
-                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lose", lang))
+                "move_used" -> {
+                    val playerName = json["player"].asString
+                    val pokemon = json["pokemon"].asString
+                    val move = json["move"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_used", lang,
+                        "playerName" to playerName, "pokemon" to pokemon, "move" to move))
                 }
-            }
-            "slow_start_ended" -> {
-                val pokemon = json["pokemon"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.slow_start_ended", lang,
-                    "pokemon" to pokemon))
-            }
-            "opponent_action_taken" -> {
-                val playerName = json["player"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent_action_taken", lang,
-                    "playerName" to playerName))
-            }
-            "timeout_move" -> {
-                val playerName = json["player"].asString
-                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.timeout", lang,
-                    "playerName" to playerName))
+                "move_missed" -> {
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_missed", lang))
+                }
+                "damage_dealt" -> {
+                    val targetPlayer = json["target_player"].asString
+                    val targetPokemon = json["target_pokemon"].asString
+                    val damage = json["damage"].asInt
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.damage_dealt", lang,
+                        "targetPlayer" to targetPlayer, "targetPokemon" to targetPokemon, "damage" to damage))
+                }
+                "critical_hit" -> {
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.critical_hit", lang))
+                }
+                "effectiveness" -> {
+                    val effectiveness = json["effectiveness"].asFloat
+                    val messageKey = when {
+                        effectiveness == 0f -> "cross.battle.effectiveness.none"
+                        effectiveness <= 0.5f -> "cross.battle.effectiveness.very_bad"
+                        effectiveness < 1f -> "cross.battle.effectiveness.bad"
+                        effectiveness == 2f -> "cross.battle.effectiveness.super"
+                        effectiveness > 2f -> "cross.battle.effectiveness.very_super"
+                        effectiveness > 1f -> "cross.battle.effectiveness.good"
+                        else -> ""
+                    }
+                    if (messageKey.isNotEmpty()) {
+                        RankUtils.sendMessage(player, MessageConfig.get(messageKey, lang))
+                    }
+                }
+                "status_applied" -> {
+                    val pokemon = json["pokemon"].asString
+                    val status = json["status"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.status_applied", lang,
+                        "pokemon" to pokemon, "status" to MessageConfig.get("cross.status.$status", lang)))
+                }
+                "status_damage" -> {
+                    val pokemon = json["pokemon"].asString
+                    val status = json["status"].asString
+                    val damage = json["damage"].asInt
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.status_damage", lang,
+                        "pokemon" to pokemon, "status" to MessageConfig.get("cross.status.$status", lang), "damage" to damage))
+                }
+                "pokemon_fainted" -> {
+                    val playerName = json["player"].asString
+                    val pokemon = json["pokemon"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.pokemon_fainted", lang,
+                        "playerName" to playerName, "pokemon" to pokemon))
+                }
+                "switch_out" -> {
+                    val playerName = json["player"].asString
+                    val pokemon = json["pokemon"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.switch_out", lang,
+                        "playerName" to playerName, "pokemon" to pokemon))
+                }
+                "switch_in" -> {
+                    val playerName = json["player"].asString
+                    val pokemon = json["pokemon"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.switch_in", lang,
+                        "playerName" to playerName, "pokemon" to pokemon))
+                }
+                "stat_change" -> {
+                    val pokemon = json["pokemon"].asString
+                    val stat = json["stat"].asString
+                    val direction = json["direction"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.stat_change", lang,
+                        "pokemon" to pokemon,
+                        "stat" to MessageConfig.get("cross.stat.$stat", lang),
+                        "direction" to MessageConfig.get("cross.direction.$direction", lang)))
+                }
+                "ability_triggered" -> {
+                    val pokemon = json["pokemon"].asString
+                    val ability = json["ability"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ability_triggered", lang,
+                        "pokemon" to pokemon, "ability" to ability))
+                }
+                "move_unusable" -> {
+                    val pokemon = json["pokemon"].asString
+                    val move = json["move"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.move_unusable", lang,
+                        "pokemon" to pokemon, "move" to move))
+                }
+                "battle_ended" -> {
+                    val winner = json["winner"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ended", lang))
+                    if (winner == "forfeit") {
+                        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_self", lang))
+                    } else if (player.uuidAsString == winner) {
+                        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.win", lang))
+                    } else {
+                        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lose", lang))
+                    }
+                }
+                "slow_start_ended" -> {
+                    val pokemon = json["pokemon"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.slow_start_ended", lang,
+                        "pokemon" to pokemon))
+                }
+                "opponent_action_taken" -> {
+                    val playerName = json["player"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent_action_taken", lang,
+                        "playerName" to playerName))
+                }
+                "timeout_move" -> {
+                    val playerName = json["player"].asString
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.battle.timeout", lang,
+                        "playerName" to playerName))
+                }
             }
         }
     }
@@ -286,15 +329,15 @@ object CrossServerSocket {
             connectionInitiator?.let { source ->
                 val lang = config.defaultLang
                 val successMessage = MessageConfig.get("cross.log.connected", lang)
-                source.sendMessage(Text.literal(successMessage))
+                executeOnSourceServer(source) {
+                    source.sendMessage(Text.literal(successMessage))
+                }
             }
             // 无论是否有源，都清空连接发起者
             connectionInitiator = null
 
             // 通知所有在队列中的玩家
-            playerMap.values.forEach { player ->
-                RankUtils.sendMessage(player, MessageConfig.get("cross.queue.connection_restored", config.defaultLang))
-            }
+            notifyTrackedPlayers("cross.queue.connection_restored")
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -328,11 +371,14 @@ object CrossServerSocket {
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
             log("cross.log.connection_closed", "code" to code, "reason" to reason)
-            disconnect()
-            scheduleReconnect()
-            // 通知所有在队列中的玩家
-            playerMap.values.forEach { player ->
-                RankUtils.sendMessage(player, MessageConfig.get("cross.queue.connection_lost", config.defaultLang))
+            cleanupConnection()
+            if (!manualDisconnect) {
+                notifyTrackedPlayers("cross.queue.connection_lost")
+                scheduleReconnect()
+            } else {
+                reconnectJob?.cancel()
+                reconnectJob = null
+                reconnectAttempts = 0
             }
         }
     }
@@ -367,101 +413,103 @@ object CrossServerSocket {
     private fun handleMatchFound(json: JsonObject) {
         val selfId = json["self_id"]?.asString ?: return
         val player = playerMap[selfId] ?: return
-        val battleId = json["battle_id"]?.asString ?: return
-        val opponentName = json["opponent_name"]?.asString ?: MessageConfig.get("cross.unknown_opponent", config.defaultLang)
-        val lang = config.defaultLang
+        executeOnPlayerServer(player) {
+            val battleId = json["battle_id"]?.asString ?: return@executeOnPlayerServer
+            val opponentName = json["opponent_name"]?.asString ?: MessageConfig.get("cross.unknown_opponent", config.defaultLang)
+            val lang = config.defaultLang
 
-        val opponentTeamJson = json["opponent_team"]?.asJsonArray
-        val opponentTeam = if (opponentTeamJson != null) {
-            opponentTeamJson.map { it.asJsonObject }
-        } else {
-            val opponentActive = json["opponent_active"]?.asJsonObject
-            if (opponentActive != null) {
-                listOf(opponentActive)
+            val opponentTeamJson = json["opponent_team"]?.asJsonArray
+            val opponentTeam = if (opponentTeamJson != null) {
+                opponentTeamJson.map { it.asJsonObject }
             } else {
-                logError("cross.log.missing_opponent_team")
-                return
-            }
-        }
-
-        val selfTeam = json["self_team"].asJsonArray.map { pokemon ->
-            pokemon.asJsonObject
-        }
-
-        val session = BattleSession(
-            battleId = battleId,
-            player = player,
-            opponentName = opponentName,
-            opponentTeam = opponentTeam,
-            selfTeam = selfTeam
-        )
-        battleSessions[player.uuidAsString] = session
-
-        // PP值验证
-        for (pokemon in selfTeam) {
-            val moves = pokemon.getAsJsonArray("moves")
-            moves?.forEach { moveElement ->
-                val move = moveElement.asJsonObject
-                if (move["current_pp"]?.asInt == 0) {
-                    val maxPP = move["max_pp"]?.asInt ?: 10
-                    move.addProperty("current_pp", maxPP)
+                val opponentActive = json["opponent_active"]?.asJsonObject
+                if (opponentActive != null) {
+                    listOf(opponentActive)
+                } else {
+                    logError("cross.log.missing_opponent_team")
+                    return@executeOnPlayerServer
                 }
             }
-        }
 
-        // 发送匹配成功消息
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.match_found", lang))
-        // 发送对手信息
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent", lang, "name" to opponentName))
+            val selfTeam = json["self_team"].asJsonArray.map { pokemon ->
+                pokemon.asJsonObject
+            }
 
-        // 获取完整的对手队伍
-        val fullOpponentTeam = if (json.has("opponent_team")) {
-            json["opponent_team"].asJsonArray.map { it.asJsonObject }
-        } else {
-            // 如果只有opponent_active，创建一个单宝可梦的临时队伍
-            val active = json["opponent_active"]?.asJsonObject
-            if (active != null) listOf(active) else emptyList()
-        }
-
-        // 发送对手队伍所有宝可梦
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent_team", lang))
-        fullOpponentTeam.forEachIndexed { index, pokemon ->
-            val pokemonName = getLocalizedPokemonName(pokemon)
-            val position = if (index == 0)
-                MessageConfig.get("cross.lead", lang)
-            else
-                "${index + 1}. "
-
-            RankUtils.sendMessage(player, "$position$pokemonName")
-        }
-
-        // 发送玩家队伍信息
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.your_team", lang))
-
-        // 只显示第一只宝可梦
-        if (selfTeam.isNotEmpty()) {
-            val firstPokemon = selfTeam[0]
-            val name = getLocalizedPokemonName(firstPokemon)
-            val hp = firstPokemon["hp"]?.asInt ?: 0
-            val maxHp = firstPokemon["max_hp"]?.asInt ?: 1
-            RankUtils.sendMessage(
-                player,
-                MessageConfig.get("cross.battle.pokemon_info", lang, "name" to name, "hp" to hp, "maxHp" to maxHp)
+            val session = BattleSession(
+                battleId = battleId,
+                player = player,
+                opponentName = opponentName,
+                opponentTeam = opponentTeam,
+                selfTeam = selfTeam
             )
+            putBattleSession(player.uuidAsString, session)
+
+            // PP值验证
+            for (pokemon in selfTeam) {
+                val moves = pokemon.getAsJsonArray("moves")
+                moves?.forEach { moveElement ->
+                    val move = moveElement.asJsonObject
+                    if (move["current_pp"]?.asInt == 0) {
+                        val maxPP = move["max_pp"]?.asInt ?: 10
+                        move.addProperty("current_pp", maxPP)
+                    }
+                }
+            }
+
+            // 发送匹配成功消息
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.match_found", lang))
+            // 发送对手信息
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent", lang, "name" to opponentName))
+
+            // 获取完整的对手队伍
+            val fullOpponentTeam = if (json.has("opponent_team")) {
+                json["opponent_team"].asJsonArray.map { it.asJsonObject }
+            } else {
+                // 如果只有opponent_active，创建一个单宝可梦的临时队伍
+                val active = json["opponent_active"]?.asJsonObject
+                if (active != null) listOf(active) else emptyList()
+            }
+
+            // 发送对手队伍所有宝可梦
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.opponent_team", lang))
+            fullOpponentTeam.forEachIndexed { index, pokemon ->
+                val pokemonName = getLocalizedPokemonName(pokemon)
+                val position = if (index == 0)
+                    MessageConfig.get("cross.lead", lang)
+                else
+                    "${index + 1}. "
+
+                RankUtils.sendMessage(player, "$position$pokemonName")
+            }
+
+            // 发送玩家队伍信息
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.your_team", lang))
+
+            // 只显示第一只宝可梦
+            if (selfTeam.isNotEmpty()) {
+                val firstPokemon = selfTeam[0]
+                val name = getLocalizedPokemonName(firstPokemon)
+                val hp = firstPokemon["hp"]?.asInt ?: 0
+                val maxHp = firstPokemon["max_hp"]?.asInt ?: 1
+                RankUtils.sendMessage(
+                    player,
+                    MessageConfig.get("cross.battle.pokemon_info", lang, "name" to name, "hp" to hp, "maxHp" to maxHp)
+                )
+            }
+
+            // 更新玩家状态：进入战斗
+            player.addCommandTag("ranked_cross_in_battle1")
+
+            // 显示更换宝可梦选项
+            showSwitchOptions(player, session)
+
+            showCurrentPokemonMoves(player, session)
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_command", lang))
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.chat", lang))
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.turn_start", lang, "turn" to 1))
+
+            requestBattleState(battleId)
         }
-
-        // 更新玩家状态：进入战斗
-        player.addCommandTag("ranked_cross_in_battle1")
-
-        // 显示更换宝可梦选项
-        showSwitchOptions(player, session)
-
-        showCurrentPokemonMoves(player, session)
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_command", lang))
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.chat", lang))
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.turn_start", lang, "turn" to 1))
-
-        requestBattleState(battleId)
     }
 
     private fun requestBattleState(battleId: String) {
@@ -475,141 +523,135 @@ object CrossServerSocket {
 
     private fun handleBattleUpdate(json: JsonObject) {
         val battleId = json["battle_id"]?.asString ?: return
-        val session = battleSessions.values.find { it.battleId == battleId } ?: return
+        val session = battleSessionsByBattleId[battleId] ?: return
         val player = session.player
-        val turn = json["turn"]?.asInt ?: 0
-        val view = json["view"]?.asJsonObject ?: return
-        val lang = config.defaultLang
+        executeOnPlayerServer(player) {
+            val turn = json["turn"]?.asInt ?: 0
+            val view = json["view"]?.asJsonObject ?: return@executeOnPlayerServer
+            val lang = config.defaultLang
 
-        val selfState = view["self"]?.asJsonObject ?: return
-        val selfActive = selfState["active"]?.asInt ?: 0
-        val selfTeam = selfState["team"]?.asJsonArray ?: return
+            val selfState = view["self"]?.asJsonObject ?: return@executeOnPlayerServer
+            val selfActive = selfState["active"]?.asInt ?: 0
+            val selfTeam = selfState["team"]?.asJsonArray ?: return@executeOnPlayerServer
 
-        if (turn == 0) return
+            if (turn == 0) return@executeOnPlayerServer
 
-        session.selfActiveIndex = selfActive
+            session.selfActiveIndex = selfActive
 
-        val selfPokemon = if (selfActive >= 0 && selfActive < selfTeam.size()) {
-            selfTeam.get(selfActive)?.asJsonObject
-        } else {
-            null
-        }
-
-        val selfPokemonName = if (selfActive < session.selfTeam.size) {
-            getLocalizedPokemonName(session.selfTeam[selfActive])
-        } else {
-            "你的宝可梦${selfActive + 1}"
-        }
-
-        val selfHp = selfPokemon?.get("hp")?.asInt ?: 0
-        val selfMaxHp = selfPokemon?.get("max_hp")?.asInt ?: 1
-        val selfStatusElement = selfPokemon?.get("status")
-        val selfStatus = when {
-            selfStatusElement == null || selfStatusElement.isJsonNull -> MessageConfig.get("cross.status.normal", lang)
-            else -> MessageConfig.get("cross.status.${selfStatusElement.asString}", lang)
-        }
-
-        val opponentState = view["opponent"]?.asJsonObject ?: return
-        val opponentActive = opponentState["active"]?.asInt ?: 0
-        val opponentTeam = opponentState["team"]?.asJsonArray ?: return
-
-        val opponentPokemonName = if (opponentActive < session.opponentTeam.size) {
-            getLocalizedPokemonName(session.opponentTeam[opponentActive])
-        } else {
-            "对手的宝可梦${opponentActive + 1}"
-        }
-
-        val opponentPokemon = if (opponentActive >= 0 && opponentActive < opponentTeam.size()) {
-            opponentTeam.get(opponentActive)?.asJsonObject
-        } else {
-            null
-        }
-
-        val opponentStatusElement = opponentPokemon?.get("status")
-        val opponentStatus = when {
-            opponentStatusElement == null || opponentStatusElement.isJsonNull -> MessageConfig.get("cross.status.normal", lang)
-            else -> MessageConfig.get("cross.status.${opponentStatusElement.asString}", lang)
-        }
-
-        val opponentHpPercent = opponentPokemon?.get("hp_percent")?.asInt ?: 0
-
-        // 获取PP值数据
-        val selfMoves = selfPokemon?.getAsJsonArray("moves")
-        val selfMovesFull = session.selfTeam.getOrNull(selfActive)?.getAsJsonArray("moves")
-        val movePP = StringBuilder(MessageConfig.get("cross.battle.current_pp", lang) + "\n")
-
-        player.sendMessage(Text.literal(MessageConfig.get("cross.battle.current_pp", lang)))
-
-        selfMoves?.forEachIndexed { index, moveElement ->
-            val moveCurrent = moveElement.asJsonObject
-            // 获取匹配时存储的完整招式数据
-            val moveFull = if (selfMovesFull != null && index < selfMovesFull.size()) {
-                selfMovesFull.get(index).asJsonObject
+            val selfPokemon = if (selfActive >= 0 && selfActive < selfTeam.size()) {
+                selfTeam.get(selfActive)?.asJsonObject
             } else {
-                moveCurrent
+                null
             }
 
-            // 使用完整数据获取本地化名称
-            val nameKey = moveFull["name_key"]?.asString ?: "cobblemon.move.${moveFull["name"]?.asString ?: "unknown"}"
-            val name = getLocalizedString(nameKey, lang, moveFull["name"]?.asString ?: "???")
+            val selfPokemonName = if (selfActive < session.selfTeam.size) {
+                getLocalizedPokemonName(session.selfTeam[selfActive])
+            } else {
+                "你的宝可梦${selfActive + 1}"
+            }
 
-            val currentPP = moveCurrent["current_pp"]?.asInt ?: 0
-            val maxPP = moveFull["max_pp"]?.asInt ?: 0
-            val hoverText = buildMoveHoverText(moveFull, lang)
+            val selfHp = selfPokemon?.get("hp")?.asInt ?: 0
+            val selfMaxHp = selfPokemon?.get("max_hp")?.asInt ?: 1
+            val selfStatusElement = selfPokemon?.get("status")
+            val selfStatus = when {
+                selfStatusElement == null || selfStatusElement.isJsonNull -> MessageConfig.get("cross.status.normal", lang)
+                else -> MessageConfig.get("cross.status.${selfStatusElement.asString}", lang)
+            }
 
-            player.sendMessage(Text.empty()
-                .append(link("[${index + 1}]", "/rank cross battle move ${index + 1}", hoverText))
-                .append(Text.literal(" $name §7(PP: $currentPP/$maxPP)")))
+            val opponentState = view["opponent"]?.asJsonObject ?: return@executeOnPlayerServer
+            val opponentActive = opponentState["active"]?.asInt ?: 0
+            val opponentTeam = opponentState["team"]?.asJsonArray ?: return@executeOnPlayerServer
+
+            val opponentPokemonName = if (opponentActive < session.opponentTeam.size) {
+                getLocalizedPokemonName(session.opponentTeam[opponentActive])
+            } else {
+                "对手的宝可梦${opponentActive + 1}"
+            }
+
+            val opponentPokemon = if (opponentActive >= 0 && opponentActive < opponentTeam.size()) {
+                opponentTeam.get(opponentActive)?.asJsonObject
+            } else {
+                null
+            }
+
+            val opponentStatusElement = opponentPokemon?.get("status")
+            val opponentStatus = when {
+                opponentStatusElement == null || opponentStatusElement.isJsonNull -> MessageConfig.get("cross.status.normal", lang)
+                else -> MessageConfig.get("cross.status.${opponentStatusElement.asString}", lang)
+            }
+
+            val opponentHpPercent = opponentPokemon?.get("hp_percent")?.asInt ?: 0
+
+            val selfMoves = selfPokemon?.getAsJsonArray("moves")
+            val selfMovesFull = session.selfTeam.getOrNull(selfActive)?.getAsJsonArray("moves")
+
+            player.sendMessage(Text.literal(MessageConfig.get("cross.battle.current_pp", lang)))
+
+            selfMoves?.forEachIndexed { index, moveElement ->
+                val moveCurrent = moveElement.asJsonObject
+                val moveFull = if (selfMovesFull != null && index < selfMovesFull.size()) {
+                    selfMovesFull.get(index).asJsonObject
+                } else {
+                    moveCurrent
+                }
+
+                val nameKey = moveFull["name_key"]?.asString ?: "cobblemon.move.${moveFull["name"]?.asString ?: "unknown"}"
+                val name = getLocalizedString(nameKey, lang, moveFull["name"]?.asString ?: "???")
+
+                val currentPP = moveCurrent["current_pp"]?.asInt ?: 0
+                val maxPP = moveFull["max_pp"]?.asInt ?: 0
+                val hoverText = buildMoveHoverText(moveFull, lang)
+
+                player.sendMessage(Text.empty()
+                    .append(link("[${index + 1}]", "/rank cross battle move ${index + 1}", hoverText))
+                    .append(Text.literal(" $name §7(PP: $currentPP/$maxPP)")))
+            }
+
+            val selfTeamArray = selfState["team"]?.asJsonArray ?: return@executeOnPlayerServer
+            session.currentSelfTeam.clear()
+            selfTeamArray.forEach { element ->
+                session.currentSelfTeam.add(element.asJsonObject)
+            }
+
+            showSwitchOptions(player, session)
+
+            val battleInfo = MessageConfig.get("cross.battle.state_title", lang, "turn" to turn) + "\n" +
+                    MessageConfig.get("cross.battle.your_pokemon", lang, "name" to selfPokemonName) + " " +
+                    MessageConfig.get("cross.battle.hp", lang, "current" to selfHp, "max" to selfMaxHp) + " " +
+                    MessageConfig.get("cross.battle.status", lang, "status" to selfStatus) + "\n" +
+                    MessageConfig.get("cross.battle.opponent_pokemon", lang, "name" to opponentPokemonName) + " " +
+                    MessageConfig.get("cross.battle.hp_percent", lang, "percent" to opponentHpPercent) + " " +
+                    MessageConfig.get("cross.battle.status", lang, "status" to opponentStatus)
+
+            session.resetActions()
+
+            RankUtils.sendMessage(player, battleInfo)
+            RankUtils.sendMessage(player, "================================")
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.turn_start", lang, "turn" to turn + 1))
         }
-
-
-        // 更新当前队伍状态
-        val selfTeamArray = selfState["team"]?.asJsonArray ?: return
-        session.currentSelfTeam.clear()
-        selfTeamArray.forEach { element ->
-            session.currentSelfTeam.add(element.asJsonObject)
-        }
-
-        showSwitchOptions(player, session)
-
-        val battleInfo = MessageConfig.get("cross.battle.state_title", lang, "turn" to turn) + "\n" +
-                MessageConfig.get("cross.battle.your_pokemon", lang, "name" to selfPokemonName) + " " +
-                MessageConfig.get("cross.battle.hp", lang, "current" to selfHp, "max" to selfMaxHp) + " " +
-                MessageConfig.get("cross.battle.status", lang, "status" to selfStatus) + "\n" +
-//                movePP.toString().trim() + "\n" +
-                MessageConfig.get("cross.battle.opponent_pokemon", lang, "name" to opponentPokemonName) + " " +
-                MessageConfig.get("cross.battle.hp_percent", lang, "percent" to opponentHpPercent) + " " +
-                MessageConfig.get("cross.battle.status", lang, "status" to opponentStatus)
-
-        // +++ 重置行动选择状态 +++
-        session.resetActions()
-
-        RankUtils.sendMessage(player, battleInfo)
-        RankUtils.sendMessage(player, "================================")
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.turn_start", lang, "turn" to turn + 1))
     }
 
     private fun handleBattleEnded(json: JsonObject) {
         val battleId = json["battle_id"]?.asString ?: return
         val winnerId = json["winner"]?.asString ?: return
-        val lang = config.defaultLang
-
-        val session = battleSessions.values.find { it.battleId == battleId } ?: return
+        val session = battleSessionsByBattleId[battleId] ?: return
         val player = session.player
+        executeOnPlayerServer(player) {
+            val lang = config.defaultLang
 
-        // +++ 确保完全清除所有状态 +++
-        player.removeCommandTag("ranked_cross_in_battle1")
-        player.removeCommandTag("ranked_cross_in_queue")
-        playerMap.remove(player.uuidAsString)
-        battleSessions.remove(player.uuidAsString)
+            player.removeCommandTag("ranked_cross_in_battle1")
+            player.removeCommandTag("ranked_cross_in_queue")
+            playerMap.remove(player.uuidAsString)
+            removeBattleSession(player.uuidAsString)
 
-        RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ended", lang))
-        if (winnerId == "forfeit") {
-            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_self", lang))
-        } else if (player.uuidAsString == winnerId) {
-            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.win", lang))
-        } else {
-            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lose", lang))
+            RankUtils.sendMessage(player, MessageConfig.get("cross.battle.ended", lang))
+            if (winnerId == "forfeit") {
+                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.forfeit_self", lang))
+            } else if (player.uuidAsString == winnerId) {
+                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.win", lang))
+            } else {
+                RankUtils.sendMessage(player, MessageConfig.get("cross.battle.lose", lang))
+            }
         }
     }
 
@@ -630,14 +672,16 @@ object CrossServerSocket {
         val ratingChange = updateJson["rating_change"].asInt
 
         // 发送消息给玩家
-        val lang = config.defaultLang
         val player = playerMap[playerId]
         if (player != null) {
-            val changeSymbol = if (ratingChange >= 0) "+" else ""
-            RankUtils.sendMessage(player, MessageConfig.get("cross.elo.update", lang,
-                "oldRating" to oldRating,
-                "newRating" to newRating,
-                "change" to "$changeSymbol$ratingChange"))
+            executeOnPlayerServer(player) {
+                val lang = config.defaultLang
+                val changeSymbol = if (ratingChange >= 0) "+" else ""
+                RankUtils.sendMessage(player, MessageConfig.get("cross.elo.update", lang,
+                    "oldRating" to oldRating,
+                    "newRating" to newRating,
+                    "change" to "$changeSymbol$ratingChange"))
+            }
         } else {
             log("cross.log.player_not_found", "playerId" to playerId)
         }
@@ -647,14 +691,16 @@ object CrossServerSocket {
         val battleId = json["battle_id"]?.asString ?: return
         val message = json["message"]?.asString ?: return
         val from = json["from"]?.asString ?: return
-        val lang = config.defaultLang
 
-        val session = battleSessions.values.find { it.battleId == battleId } ?: return
+        val session = battleSessionsByBattleId[battleId] ?: return
         val player = session.player
 
-        if (from != player.uuidAsString) {
-            RankUtils.sendMessage(player, MessageConfig.get("cross.chat.message", lang,
-                "opponentName" to session.opponentName, "message" to message))
+        executeOnPlayerServer(player) {
+            val lang = config.defaultLang
+            if (from != player.uuidAsString) {
+                RankUtils.sendMessage(player, MessageConfig.get("cross.chat.message", lang,
+                    "opponentName" to session.opponentName, "message" to message))
+            }
         }
     }
 
@@ -691,24 +737,24 @@ object CrossServerSocket {
             url = "${config.cloudApiUrl}/join-queue",
             body = json,
             onSuccess = {
-                RankUtils.sendMessage(player, MessageConfig.get("cross.queue.join_success", lang, "mode" to mode))
-                // 添加跨服匹配标识
-                player.addCommandTag("ranked_cross_in_queue")
-                        },
+                executeOnPlayerServer(player) {
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.queue.join_success", lang, "mode" to mode))
+                    player.addCommandTag("ranked_cross_in_queue")
+                }
+            },
             onError = { errorMsg ->
-                // 处理403错误
-                val message = if (errorMsg.contains("410")) {
-                    MessageConfig.get("cross.queue.join_failed.authenticated_only", lang)
+                executeOnPlayerServer(player) {
+                    val message = if (errorMsg.contains("410")) {
+                        MessageConfig.get("cross.queue.join_failed.authenticated_only", lang)
+                    } else if (errorMsg.contains("429")) {
+                        MessageConfig.get("cross.queue.join_failed.battles_exceeds", lang)
+                    } else {
+                        MessageConfig.get("cross.queue.join_failed", lang, "error" to errorMsg)
+                    }
+                    playerMap.remove(player.uuidAsString)
+                    player.removeCommandTag("ranked_cross_in_queue")
+                    RankUtils.sendMessage(player, message)
                 }
-                else if (errorMsg.contains("429")) {
-                    MessageConfig.get("cross.queue.join_failed.battles_exceeds", lang)
-                }
-                else {
-                    MessageConfig.get("cross.queue.join_failed", lang, "error" to errorMsg)
-                }
-                playerMap.remove(player.uuidAsString)
-                player.removeCommandTag("ranked_cross_in_queue")
-                RankUtils.sendMessage(player, message)
             }
         )
     }
@@ -735,14 +781,17 @@ object CrossServerSocket {
             url = "${config.cloudApiUrl}/leave-queue",
             body = json,
             onSuccess = {
-                RankUtils.sendMessage(player, MessageConfig.get("cross.queue.leave_success", lang))
-                // 移除队列标签
-                player.removeCommandTag("ranked_cross_in_queue")
-                        },
+                executeOnPlayerServer(player) {
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.queue.leave_success", lang))
+                    player.removeCommandTag("ranked_cross_in_queue")
+                }
+            },
             onError = {
-                RankUtils.sendMessage(player, MessageConfig.get("cross.queue.leave_failed", lang, "error" to it))
-                playerMap.remove(player.uuidAsString)
-                player.removeCommandTag("ranked_cross_in_queue")
+                executeOnPlayerServer(player) {
+                    RankUtils.sendMessage(player, MessageConfig.get("cross.queue.leave_failed", lang, "error" to it))
+                    playerMap.remove(player.uuidAsString)
+                    player.removeCommandTag("ranked_cross_in_queue")
+                }
             }
         )
     }
@@ -1027,15 +1076,14 @@ object CrossServerSocket {
     fun disconnect() {
         manualDisconnect = true // 标记为手动断开
         log("cross.log.disconnected")
-        webSocket?.close(1000, "close")
-        webSocket = null
-        heartbeatJob?.cancel()
-        heartbeatJob = null
+        val socket = webSocket
+        cleanupConnection()
+        socket?.close(1000, "close")
         reconnectJob?.cancel()  // 取消计划中的重连
         reconnectJob = null      // 清空引用
         reconnectAttempts = 0    // 重置重连计数器
         playerMap.clear()
-        battleSessions.clear()
+        clearBattleSessions()
     }
 
     fun handlePlayerDisconnect(player: ServerPlayerEntity) {
@@ -1054,7 +1102,7 @@ object CrossServerSocket {
 
         // 确保完全移除
         playerMap.remove(player.uuidAsString)
-        battleSessions.remove(player.uuidAsString)
+        removeBattleSession(player.uuidAsString)
     }
 
     fun handlePlayerJoin(player: ServerPlayerEntity) {
@@ -1064,7 +1112,7 @@ object CrossServerSocket {
 
         // 从匹配队列和战斗会话中移除玩家（防御性编程）
         playerMap.remove(player.uuidAsString)
-        battleSessions.remove(player.uuidAsString)
+        removeBattleSession(player.uuidAsString)
     }
 
     private fun sendForfeitCommand(player: ServerPlayerEntity) {
@@ -1079,7 +1127,7 @@ object CrossServerSocket {
 //        log("cross.log.auto_forfeit", "player" to player.name.string, "battleId" to session.battleId)
         webSocket?.send(message.toString())
         playerMap.remove(player.uuidAsString)
-        battleSessions.remove(player.uuidAsString)
+        removeBattleSession(player.uuidAsString)
     }
 
     private fun log(messageKey: String, vararg args: Pair<String, Any>) {

@@ -17,6 +17,7 @@ import com.cobblemon.mod.common.pokemon.Pokemon
 import net.minecraft.server.network.ServerPlayerEntity
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
 
@@ -27,6 +28,7 @@ object DuoBattleManager {
     private val teamBattleIdMap = mutableMapOf<DuoTeam, UUID>()
     private val indices = mutableMapOf<DuoTeam, Int>()
     private val arenaCache = mutableMapOf<DuoTeam, Pair<BattleArena, List<ArenaCoordinate>>>()
+    private val roundScheduler = Executors.newSingleThreadScheduledExecutor()
 
     fun registerBattle(battleId: UUID, team1: DuoTeam, team2: DuoTeam) {
         activeBattles[battleId] = team1 to team2
@@ -143,7 +145,7 @@ object DuoBattleManager {
             }
 
             val server = if (!nextLoserPlayer.isDisconnected) nextLoserPlayer.server else currentWinnerPlayer.server
-            java.util.concurrent.Executors.newSingleThreadScheduledExecutor().schedule({
+            roundScheduler.schedule({
                 server.execute {
                     try {
                         if (nextLoserPlayer.isDisconnected) {
@@ -305,6 +307,11 @@ object DuoBattleManager {
         val format = "2v2singles"
         val seasonId = CobblemonRanked.seasonManager.currentSeasonId
 
+        BattleHandler.recordSelectedPokemonUsage(winnerTeam.player1, winnerTeam.team1, seasonId)
+        BattleHandler.recordSelectedPokemonUsage(winnerTeam.player2, winnerTeam.team2, seasonId)
+        BattleHandler.recordSelectedPokemonUsage(loserTeam.player1, loserTeam.team1, seasonId)
+        BattleHandler.recordSelectedPokemonUsage(loserTeam.player2, loserTeam.team2, seasonId)
+
         val winnerData = listOf(winnerTeam.player1, winnerTeam.player2).map {
             BattleHandler.rankDao.getPlayerData(it.uuid, seasonId, format) ?: PlayerRankData(
                 playerId = it.uuid,
@@ -435,6 +442,10 @@ object DuoBattleManager {
         arenasToRelease.forEach { arena ->
             BattleHandler.releaseArena(arena)
         }
+    }
+
+    fun shutdown() {
+        roundScheduler.shutdownNow()
     }
 
     fun clearAll() {

@@ -1,14 +1,11 @@
 package cn.kurt6.cobblemon_ranked.crossserver
 
 import cn.kurt6.cobblemon_ranked.CobblemonRanked
-import com.google.gson.JsonElement
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.InputStreamReader
 
 object CommblemonLang {
     private val messagesCache = mutableMapOf<String, Map<String, String>>()
-    private val jsonParser = JsonParser()
 
     fun get(key: String, lang: String, vararg params: Pair<String, Any>): String {
         val normalizedLang = when (lang.lowercase()) {
@@ -31,8 +28,7 @@ object CommblemonLang {
         val resource = "/lang/$lang.json"
         return CommblemonLang::class.java.getResourceAsStream(resource)?.use { inputStream ->
             InputStreamReader(inputStream, "UTF-8").use { reader ->
-                // +++ 修复：手动解析JSON并处理重复键 +++
-                val jsonElement = jsonParser.parse(reader)
+                val jsonElement = JsonParser.parseReader(reader)
                 if (!jsonElement.isJsonObject) {
                     CobblemonRanked.logger.error("Language file is not a JSON object")
                     return emptyMap()

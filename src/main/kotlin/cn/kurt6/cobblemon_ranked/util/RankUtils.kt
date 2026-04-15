@@ -23,6 +23,10 @@ object RankUtils {
         player.sendMessage(Text.literal(message), false)
     }
 
+    fun sendActionBar(player: PlayerEntity, message: String) {
+        player.sendMessage(Text.literal(message), true)
+    }
+
     fun sendTitle(
         player: PlayerEntity,
         title: String,

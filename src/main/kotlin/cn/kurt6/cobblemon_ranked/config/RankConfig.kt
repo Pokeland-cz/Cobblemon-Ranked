@@ -38,6 +38,9 @@ data class RankConfig(
     @Comment("Time allowed for team selection in seconds / 队伍选择阶段的时间限制(秒)")
     var teamSelectionTime: Int = 90,
 
+    @Comment("Time allowed to choose an action each turn in seconds (0 = disabled) / 每回合选择行动的时间限制（秒，0为关闭）")
+    var turnActionTimeoutSeconds: Int = 90,
+
     @Comment("Number of Pokemon to select for Singles (usually 3) / 单打模式选出的宝可梦数量 (通常为3)")
     var singlesPickCount: Int = 3,
 

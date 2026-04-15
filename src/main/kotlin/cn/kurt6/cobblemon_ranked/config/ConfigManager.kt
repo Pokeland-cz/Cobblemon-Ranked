@@ -3,7 +3,6 @@ package cn.kurt6.cobblemon_ranked.config
 import cn.kurt6.cobblemon_ranked.CobblemonRanked
 import cn.kurt6.cobblemon_ranked.matchmaking.DuoMatchmakingQueue
 import cn.kurt6.cobblemon_ranked.util.RankUtils
-import kotlinx.serialization.json.JsonPrimitive
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -124,10 +123,10 @@ object ConfigManager {
                     ?.map { it.value as String }
                     ?: rawConfig.allowedFormats
 
-                val rawMaxQueueTime = json.get("maxQueueTime") as? JsonPrimitive
+                val rawMaxQueueTime = json.get("maxQueueTime") as? blue.endless.jankson.JsonPrimitive
                 val fixedMaxQueueTime = rawMaxQueueTime?.toString()?.removeSurrounding("\"")?.toIntOrNull() ?: rawConfig.maxQueueTime
 
-                val rawMaxEloMultiplier = json.get("maxEloMultiplier") as? JsonPrimitive
+                val rawMaxEloMultiplier = json.get("maxEloMultiplier") as? blue.endless.jankson.JsonPrimitive
                 val fixedMaxEloMultiplier = rawMaxEloMultiplier?.toString()?.removeSurrounding("\"")?.toDoubleOrNull() ?: rawConfig.maxEloMultiplier
 
                 val rawBattleArenas = json.get("battleArenas") as? blue.endless.jankson.JsonArray
@@ -217,7 +216,7 @@ object ConfigManager {
                 val fixedBannedNatures = rawBannedNatures
                     ?.mapNotNull { it as? blue.endless.jankson.JsonPrimitive }
                     ?.map { it.value as String }
-                    ?: rawConfig.bannedCarriedItems
+                    ?: rawConfig.bannedNatures
 
                 val rawBannedAbilities = json.get("bannedAbilities") as? blue.endless.jankson.JsonArray
                 val fixedBannedAbilities = rawBannedAbilities
@@ -276,6 +275,9 @@ object ConfigManager {
                 val rawTeamSelectionTime = json.get("teamSelectionTime")
                 val fixedTeamSelectionTime = rawTeamSelectionTime?.toString()?.removeSurrounding("\"")?.toIntOrNull() ?: rawConfig.teamSelectionTime
 
+                val rawTurnActionTimeoutSeconds = json.get("turnActionTimeoutSeconds")
+                val fixedTurnActionTimeoutSeconds = rawTurnActionTimeoutSeconds?.toString()?.removeSurrounding("\"")?.toIntOrNull() ?: rawConfig.turnActionTimeoutSeconds
+
                 val rawSinglesPickCount = json.get("singlesPickCount")
                 val fixedSinglesPickCount = rawSinglesPickCount?.toString()?.removeSurrounding("\"")?.toIntOrNull() ?: rawConfig.singlesPickCount
 
@@ -312,6 +314,7 @@ object ConfigManager {
                     allowDuplicateItems = fixedAllowDuplicateItems,
                     enableTeamPreview = fixedEnableTeamPreview,
                     teamSelectionTime = fixedTeamSelectionTime,
+                    turnActionTimeoutSeconds = fixedTurnActionTimeoutSeconds,
                     singlesPickCount = fixedSinglesPickCount,
                     doublesPickCount = fixedDoublesPickCount,
                     maxEloMultiplier = fixedMaxEloMultiplier,

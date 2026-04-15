@@ -238,6 +238,7 @@ class MatchmakingQueue {
                 if (world == null) {
                     RankUtils.sendMessage(player1.player, MessageConfig.get("queue.world_load_fail", lang, "world" to arena.world))
                     RankUtils.sendMessage(player2.player, MessageConfig.get("queue.world_load_fail", lang, "world" to arena.world))
+                    BattleHandler.releaseArena(arena)
                     processingMatches.remove(player1.player.uuid)
                     processingMatches.remove(player2.player.uuid)
                     return@requestArena

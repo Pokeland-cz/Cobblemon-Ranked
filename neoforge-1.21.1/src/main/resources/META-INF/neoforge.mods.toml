@@ -1,0 +1,33 @@
+modLoader = "kotlinforforge"
+loaderVersion = "${kff_loader_version_range}"
+license = "GPL-v3.0"
+
+[[mods]]
+modId = "cobblemon_ranked"
+version = "${version}"
+displayName = "Cobblemon Ranked"
+authors = "Kurt"
+description = '''
+Adds competitive ranked battles to Cobblemon
+'''
+
+[[dependencies.cobblemon_ranked]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${neo_version},)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.cobblemon_ranked]]
+modId = "minecraft"
+type = "required"
+versionRange = "[${minecraft_version}]"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.cobblemon_ranked]]
+modId = "cobblemon"
+type = "required"
+versionRange = "[${cobblemon_version},)"
+ordering = "AFTER"
+side = "BOTH"

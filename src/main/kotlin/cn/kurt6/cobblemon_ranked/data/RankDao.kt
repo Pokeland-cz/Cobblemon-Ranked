@@ -49,6 +49,32 @@ class RankDao(dbConfig: DatabaseConfig, configDir: File) {
                     )
                 }
             }
+            "mariadb" -> {
+                try {
+                    val db = dbConfig.mysql // You can reuse the mysql config fields for host/port
+                    val jdbcUrl = "jdbc:mariadb://${db.host}:${db.port}/${db.database}?${db.parameters}"
+                    Database.connect(
+                        url = jdbcUrl,
+                        driver = "org.mariadb.jdbc.Driver", // Use MariaDB's official driver
+                        user = db.username,
+                        password = db.password,
+                        setupConnection = {
+                            it.createStatement().queryTimeout = TimeUnit.MILLISECONDS.toSeconds(queryTimeoutMs).toInt()
+                        }
+                    )
+                } catch (e: Exception) {
+                    logger.error("Failed to connect to MariaDB, falling back to SQLite: ${e.message}")
+                    val dbFile = configDir.resolve(dbConfig.sqliteFile)
+                    val url = "jdbc:sqlite:${dbFile.absolutePath}?busy_timeout=$connectionTimeoutMs"
+                    Database.connect(
+                        url = url,
+                        driver = "org.sqlite.JDBC",
+                        setupConnection = {
+                            it.createStatement().queryTimeout = TimeUnit.MILLISECONDS.toSeconds(queryTimeoutMs).toInt()
+                        }
+                    )
+                }
+            }
             "sqlite" -> {
                 val dbFile = configDir.resolve(dbConfig.sqliteFile)
                 val url = "jdbc:sqlite:${dbFile.absolutePath}?busy_timeout=$connectionTimeoutMs"

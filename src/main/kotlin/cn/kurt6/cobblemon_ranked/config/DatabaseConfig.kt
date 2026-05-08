@@ -3,7 +3,7 @@ package cn.kurt6.cobblemon_ranked.config
 import blue.endless.jankson.Comment
 
 data class DatabaseConfig(
-    @Comment("Database type: 'sqlite' or 'mysql' / 数据库类型：'sqlite' 或 'mysql'")
+    @Comment("Database type: 'sqlite' or 'mysql' or 'mariadb'")
     var databaseType: String = "sqlite",
 
     @Comment("SQLite database file path (relative to config folder) / SQLite 数据库文件路径")
@@ -14,27 +14,27 @@ data class DatabaseConfig(
 )
 
 data class MySQLConfig(
-    @Comment("MySQL host address / MySQL 主机地址")
+    @Comment("MySQL/MariaDB host address / MySQL 主机地址")
     var host: String = "localhost",
 
-    @Comment("MySQL port / MySQL 端口")
+    @Comment("MySQL/MariaDB port / MySQL 端口")
     var port: Int = 3306,
 
-    @Comment("MySQL database name / MySQL 数据库名")
+    @Comment("MySQL/MariaDB database name / MySQL 数据库名")
     var database: String = "cobblemon_ranked",
 
-    @Comment("MySQL username / MySQL 用户名")
+    @Comment("MySQL/MariaDB username / MySQL 用户名")
     var username: String = "root",
 
-    @Comment("MySQL password / MySQL 密码")
+    @Comment("MySQL/MariaDB password / MySQL 密码")
     var password: String = "",
 
-    @Comment("MySQL connection pool size / MySQL 连接池大小")
+    @Comment("MySQL/MariaDB connection pool size / MySQL 连接池大小")
     var poolSize: Int = 10,
 
-    @Comment("MySQL connection timeout (ms) / MySQL 连接超时时间（毫秒）")
+    @Comment("MySQL/MariaDB connection timeout (ms) / MySQL 连接超时时间（毫秒）")
     var connectionTimeout: Long = 5000,
 
-    @Comment("Additional MySQL connection parameters / MySQL 额外连接参数")
+    @Comment("Additional MySQL/MariaDB connection parameters / MySQL 额外连接参数")
     var parameters: String = "useSSL=false&serverTimezone=UTC&characterEncoding=utf8"
 )
